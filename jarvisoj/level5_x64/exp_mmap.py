@@ -116,8 +116,8 @@ class Pwn(object):
                            int fd, off_t offset);
         """
         self.io = self.get_io()
-        # gdb.attach(self.io, 'b main')
-        gdb.attach(self.io, 'b vulnerable_function')
+        # gdb.attach(self.io, """b *0x4005fd\n continue\n continue\n""")
+        gdb.attach(self.io, """b *0x4005fd\n continue\n""")
         self.io.recvuntil("Input:\n")
 
         write_plt = self.elf.symbols['write']
